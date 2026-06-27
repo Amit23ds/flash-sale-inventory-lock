@@ -100,11 +100,11 @@ Expected Result
 
 ## JMeter Summary Report
 
-![Summary](docs/jmeter-summary-report.png)
+![Summary](docs/summary-report.png)
 
 ## Aggregate Report
 
-![Aggregate](docs/jmeter-aggregate-report.png)
+![Aggregate](docs/aggregate-report.png)
 
 ## View Results Tree
 
