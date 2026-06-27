@@ -1,114 +1,102 @@
-# Flash Sale Inventory Lock System
+# Flash Sale Inventory Lock
 
-## Overview
+A backend service that prevents inventory overselling during high-traffic flash sales — the exact failure mode that hits e-commerce platforms like Flipkart, Amazon, and Swiggy Instamart when thousands of users try to buy the same limited-stock item at once.
 
-A Spring Boot application demonstrating a distributed inventory locking mechanism using Redisson and Redis to prevent overselling during flash sales.
+Built and load-tested to guarantee **zero oversells**, even when concurrent requests outnumber available stock by 10x.
 
----
+## The problem
 
-## Tech Stack
+When a flash sale goes live, hundreds or thousands of users hit "Buy Now" on the same product within milliseconds of each other. Without proper concurrency control, multiple requests can read the same stock count, all see it as available, and all successfully decrement it — resulting in more orders than inventory actually exists.
 
-- Java 21+
-- Spring Boot 3
-- Spring Data JPA
-- MySQL
-- Redis
-- Redisson
-- Docker
-- Maven
-- JUnit 5
-- Mockito
-- JMeter
+## The solution
 
----
+Every purchase request acquires a Redisson distributed lock scoped to the specific product before checking or modifying stock. This guarantees that only one request can read-check-decrement that product's inventory at a time — even across multiple application instances, which is what makes this approach work in a real horizontally-scaled deployment, unlike a plain in-memory `synchronized` block.
 
-## Features
+```
+Client → Spring Boot API → Redisson Lock (per product) → MySQL (stock + orders)
+                                    │
+                              Redis (lock state)
+```
 
-- Distributed locking
-- Flash sale purchase API
-- Stock management
-- Exception handling
-- REST API
-- Dockerized deployment
-- Unit Testing
-- Integration Testing
-- Load Testing
+If the lock can't be acquired in time, the request fails fast with `429 Too Many Requests` instead of queuing and degrading the whole system. If stock is already zero, it fails fast with `409 Conflict` without even attempting a lock.
 
----
+## Proven results
 
-## Project Structure
+Load tested with Apache JMeter: 100 concurrent purchase requests fired at a product with 10 units of stock.
 
-src
-├── controller
-├── service
-├── repository
-├── entity
-├── dto
-├── exception
+| Metric | Result |
+|---|---|
+| Total requests | 100 |
+| Successful purchases | 10 |
+| Out-of-stock rejections | 90 |
+| Final stock | 0 |
+| Overselling | **None** |
 
----
+![Summary report](docs/summary-report.png)
+![Aggregate report](docs/aggregate-report.png)
+![Result_Tree report](docs/view-results-tree.png)
+
+## Tech stack
+
+**Core:** Java 21, Spring Boot 3, Spring Data JPA
+**Concurrency & caching:** Redis, Redisson (distributed locking)
+**Persistence:** MySQL
+**Testing:** JUnit 5, Mockito, Apache JMeter
+**Infra:** Docker, Docker Compose
 
 ## API
 
-POST /api/v1/purchase
+**`POST /api/v1/purchase`**
 
-Request
+```json
+// Request
+{ "userId": 1, "productId": 1 }
 
-{
-  "userId":1,
-  "productId":1
-}
+// Success response
+{ "orderId": 1, "userId": 1, "productId": 1, "orderStatus": "CONFIRMED" }
+```
 
-Response
+| Status | Meaning |
+|---|---|
+| `200` | Purchase confirmed |
+| `404` | Product not found |
+| `409` | Out of stock |
+| `429` | Lock not acquired — too many concurrent requests, retry |
 
-{
-  "orderId":1,
-  "userId":1,
-  "productId":1,
-  "orderStatus":"CONFIRMED"
-}
+**`GET /api/v1/stock/{productId}`** — returns current available stock.
 
----
+## Architecture
 
-## Running
+```
+controller   → handles HTTP requests/responses
+service      → business logic, lock acquisition, stock validation
+repository   → Spring Data JPA, MySQL access
+config       → Redisson client setup
+exception    → centralized error → HTTP status mapping
+```
 
+## Running locally
+
+```bash
 docker compose up --build
+```
 
-mvn spring-boot:run
+This starts the Spring Boot app alongside MySQL and Redis as a single reproducible environment.
 
----
+## Running tests
 
-## Testing
-
+```bash
 mvn test
+```
 
----
+Includes unit tests for the service layer and integration tests for both controllers.
 
-## Load Test
+## What this project demonstrates
 
-Apache JMeter
-
-100 concurrent requests
-
-Expected Result
-
-- 10 Success
-- 90 Out Of Stock
-- No Overselling
-
----
-
-## JMeter Summary Report
-
-![Summary](docs/summary-report.png)
-
-## Aggregate Report
-
-![Aggregate](docs/aggregate-report.png)
-
-## View Results Tree
-
-![Results](docs/view-results-tree.png)
+- Distributed locking with Redisson, including correct lock release in a `finally` block and ownership checks via `isHeldByCurrentThread()`
+- The distinction between database transactions (atomic writes) and distributed locks (cross-instance coordination) — and why both are needed together
+- Fail-fast design under load instead of unbounded request queuing
+- Load testing methodology and interpreting concurrency results
 
 ## Author
 
