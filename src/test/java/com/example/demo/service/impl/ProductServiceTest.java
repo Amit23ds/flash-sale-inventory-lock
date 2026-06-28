@@ -6,7 +6,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
-import com.example.demo.dto.StockResponse;
 import com.example.demo.entity.Product;
 import com.example.demo.exception.ProductNotFoundException;
 import com.example.demo.repository.ProductRepository;
@@ -27,7 +26,7 @@ class ProductServiceTest {
     private ProductServiceImpl productService;
 
     @Test
-    void getAvailableStock_returnsStockWhenProductExists() {
+    void getProductById_returnsProductWhenItExists() {
         Product product = Product.builder()
                 .id(1L)
                 .productName("Keyboard")
@@ -35,21 +34,22 @@ class ProductServiceTest {
                 .build();
         when(productRepository.findById(1L)).thenReturn(Optional.of(product));
 
-        StockResponse response = productService.getAvailableStock(1L);
+        Product result = productService.getProductById(1L);
 
-        assertEquals(1L, response.getProductId());
-        assertEquals(15, response.getAvailableStock());
+        assertEquals(1L, result.getId());
+        assertEquals("Keyboard", result.getProductName());
+        assertEquals(15, result.getAvailableStock());
         verify(productRepository).findById(1L);
         verifyNoMoreInteractions(productRepository);
     }
 
     @Test
-    void getAvailableStock_throwsWhenProductMissing() {
+    void getProductById_throwsWhenProductMissing() {
         when(productRepository.findById(99L)).thenReturn(Optional.empty());
 
         ProductNotFoundException exception = assertThrows(
                 ProductNotFoundException.class,
-                () -> productService.getAvailableStock(99L));
+                () -> productService.getProductById(99L));
 
         assertEquals("Product not found", exception.getMessage());
         verify(productRepository).findById(99L);
