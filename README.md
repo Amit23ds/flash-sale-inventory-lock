@@ -18,7 +18,7 @@ Client → Spring Boot API → Redisson Lock (per product) → MySQL (stock + or
                               Redis (lock state)
 ```
 
-If the lock can't be acquired in time, the request fails fast with `429 Too Many Requests` instead of queuing and degrading the whole system. If stock is already zero, it fails fast with `409 Conflict` without even attempting a lock.
+If the lock can't be acquired in time, the request fails fast with `429 Too Many Requests` instead of queuing and degrading the whole system. If stock has run out by the time the lock is acquired, the request returns `409 Conflict` without writing anything to the database.
 
 ## Proven results
 
