@@ -80,10 +80,11 @@ exception    → centralized error → HTTP status mapping
 ## Running locally
 
 ```bash
+cp .env.example .env   # then edit .env with your own credentials
 docker compose up --build
 ```
 
-This starts the Spring Boot app alongside MySQL and Redis as a single reproducible environment.
+This starts the Spring Boot app alongside MySQL and Redis as a single reproducible environment. Database credentials are read from `.env`, which is gitignored so secrets never reach the repo.
 
 ## Running tests
 

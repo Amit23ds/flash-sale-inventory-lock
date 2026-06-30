@@ -24,3 +24,6 @@ run/
 
 # Misc
 out/
+
+# Secrets
+.env
