@@ -6,6 +6,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -30,4 +31,8 @@ public class Product {
 
     @Column(name = "available_stock", nullable = false)
     private Integer availableStock;
+
+    @Version
+    @Column(name = "version", nullable = false)
+    private long version;
 }

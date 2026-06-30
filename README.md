@@ -20,6 +20,8 @@ Client → Spring Boot API → Redisson Lock (per product) → MySQL (stock + or
 
 If the lock can't be acquired in time, the request fails fast with `429 Too Many Requests` instead of queuing and degrading the whole system. If stock has run out by the time the lock is acquired, the request returns `409 Conflict` without writing anything to the database.
 
+As a second line of defense, the `Product` entity carries a JPA `@Version` field. If the Redis lock is unavailable or its lease expires under load, the database itself rejects stale-version writes; the purchase service retries a small bounded number of times before returning `409 Conflict`. Correctness no longer rests on Redis being healthy.
+
 ## Proven results
 
 Load tested with Apache JMeter: 100 concurrent purchase requests fired at a product with 10 units of stock.
@@ -60,7 +62,7 @@ Load tested with Apache JMeter: 100 concurrent purchase requests fired at a prod
 |---|---|
 | `200` | Purchase confirmed |
 | `404` | Product not found |
-| `409` | Out of stock |
+| `409` | Out of stock or concurrent stock-update conflict |
 | `429` | Lock not acquired — too many concurrent requests, retry |
 
 **`GET /api/v1/stock/{productId}`** — returns current available stock.
@@ -94,6 +96,7 @@ Includes unit tests for the service layer and integration tests for both control
 ## What this project demonstrates
 
 - Distributed locking with Redisson, including correct lock release in a `finally` block and ownership checks via `isHeldByCurrentThread()`
+- Two-layer concurrency control — Redis distributed lock plus JPA `@Version` optimistic locking — so correctness doesn't depend on Redis alone
 - The distinction between database transactions (atomic writes) and distributed locks (cross-instance coordination) — and why both are needed together
 - Fail-fast design under load instead of unbounded request queuing
 - Load testing methodology and interpreting concurrency results

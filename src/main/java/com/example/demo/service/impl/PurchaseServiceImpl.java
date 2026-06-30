@@ -3,31 +3,26 @@ package com.example.demo.service.impl;
 import com.example.demo.dto.PurchaseRequest;
 import com.example.demo.dto.PurchaseResponse;
 import com.example.demo.entity.Order;
-import com.example.demo.entity.OrderStatus;
-import com.example.demo.entity.Product;
+import com.example.demo.exception.ConcurrentStockUpdateException;
 import com.example.demo.exception.LockAcquisitionException;
-import com.example.demo.exception.OutOfStockException;
-import com.example.demo.exception.ProductNotFoundException;
-import com.example.demo.repository.OrderRepository;
-import com.example.demo.repository.ProductRepository;
 import com.example.demo.service.PurchaseService;
 import java.util.concurrent.TimeUnit;
+import lombok.RequiredArgsConstructor;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import lombok.RequiredArgsConstructor;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
 public class PurchaseServiceImpl implements PurchaseService {
 
-    private final ProductRepository productRepository;
-    private final OrderRepository orderRepository;
+    private static final int MAX_OPTIMISTIC_LOCK_RETRIES = 3;
+
+    private final PurchaseTransactionalService purchaseTransactionalService;
     private final RedissonClient redissonClient;
 
     @Override
-    @Transactional
     public PurchaseResponse purchase(PurchaseRequest request) {
         RLock lock = redissonClient.getLock("product-lock:" + request.getProductId());
         boolean locked = false;
@@ -38,23 +33,11 @@ public class PurchaseServiceImpl implements PurchaseService {
                 throw new LockAcquisitionException("Too many requests");
             }
 
-            Product product = productRepository.findById(request.getProductId())
-                    .orElseThrow(() -> new ProductNotFoundException("Product not found"));
-
-            if (product.getAvailableStock() <= 0) {
-                throw new OutOfStockException("Out of stock");
-            }
-
-            product.setAvailableStock(product.getAvailableStock() - 1);
-            productRepository.save(product);
-
-            Order order = Order.builder()
-                    .userId(request.getUserId())
-                    .productId(product.getId())
-                    .orderStatus(OrderStatus.CONFIRMED)
-                    .build();
-
-            Order savedOrder = orderRepository.save(order);
+            // Lock is acquired outside the transaction so we never hold a DB connection
+            // while blocked on Redis, and released only after commit so a waiter cannot
+            // read pre-commit stock. The @Version retry below is a DB-level fallback in
+            // case the Redis lock is unavailable or its lease expires under load.
+            Order savedOrder = decrementWithRetry(request.getProductId(), request.getUserId());
 
             return PurchaseResponse.builder()
                     .orderId(savedOrder.getId())
@@ -69,6 +52,21 @@ public class PurchaseServiceImpl implements PurchaseService {
         } finally {
             if (locked && lock.isHeldByCurrentThread()) {
                 lock.unlock();
+            }
+        }
+    }
+
+    private Order decrementWithRetry(Long productId, Long userId) {
+        int attempts = 0;
+        while (true) {
+            try {
+                return purchaseTransactionalService.decrementStockAndCreateOrder(productId, userId);
+            } catch (ObjectOptimisticLockingFailureException exception) {
+                attempts++;
+                if (attempts >= MAX_OPTIMISTIC_LOCK_RETRIES) {
+                    throw new ConcurrentStockUpdateException(
+                            "Could not reserve stock after " + attempts + " concurrent retries");
+                }
             }
         }
     }

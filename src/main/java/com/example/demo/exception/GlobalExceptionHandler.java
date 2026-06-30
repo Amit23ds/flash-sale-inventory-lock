@@ -22,6 +22,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(exception.getMessage());
     }
 
+    @ExceptionHandler(ConcurrentStockUpdateException.class)
+    public ResponseEntity<String> handleConcurrentStockUpdateException(
+            ConcurrentStockUpdateException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(exception.getMessage());
+    }
+
     @ExceptionHandler(LockAcquisitionException.class)
     public ResponseEntity<String> handleLockAcquisitionException(LockAcquisitionException exception) {
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(exception.getMessage());
