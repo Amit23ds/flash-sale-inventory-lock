@@ -1,5 +1,7 @@
 # Flash Sale Inventory Lock
 
+[![CI](https://github.com/Amit23ds/flash-sale-inventory-lock/actions/workflows/ci.yml/badge.svg)](https://github.com/Amit23ds/flash-sale-inventory-lock/actions/workflows/ci.yml)
+
 A backend service that prevents inventory overselling during high-traffic flash sales — the exact failure mode that hits e-commerce platforms like Flipkart, Amazon, and Swiggy Instamart when thousands of users try to buy the same limited-stock item at once.
 
 Built and load-tested to guarantee **zero oversells**, even when concurrent requests outnumber available stock by 10x.
