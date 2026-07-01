@@ -43,7 +43,7 @@ Load tested with Apache JMeter: 100 concurrent purchase requests fired at a prod
 **Core:** Java 25, Spring Boot 3, Spring Data JPA
 **Concurrency & caching:** Redis, Redisson (distributed locking)
 **Persistence:** MySQL
-**Testing:** JUnit 5, Mockito, Apache JMeter
+**Testing:** JUnit 5, Mockito, Testcontainers, Apache JMeter
 **Infra:** Docker, Docker Compose
 
 ## API
@@ -89,10 +89,11 @@ This starts the Spring Boot app alongside MySQL and Redis as a single reproducib
 ## Running tests
 
 ```bash
-mvn test
+mvn test        # unit tests + Spring MVC slice tests (no Docker required)
+mvn verify      # also runs the Testcontainers end-to-end test (requires Docker)
 ```
 
-Includes unit tests for the service layer and integration tests for both controllers.
+The end-to-end test (`FlashSaleConcurrencyIT`) spins up real MySQL and Redis containers via Testcontainers, boots the full Spring application on a random port, then fires 50 concurrent HTTP purchase requests against a product with 10 units of stock. It asserts exactly 10 confirmed orders, zero remaining stock, and 40 requests failed with 409/429 — proving no oversell under real network + database contention.
 
 ## What this project demonstrates
 
@@ -101,6 +102,7 @@ Includes unit tests for the service layer and integration tests for both control
 - The distinction between database transactions (atomic writes) and distributed locks (cross-instance coordination) — and why both are needed together
 - Fail-fast design under load instead of unbounded request queuing
 - Load testing methodology and interpreting concurrency results
+- Testcontainers end-to-end concurrency test that boots real MySQL + Redis and asserts zero oversell under 50 concurrent HTTP requests
 
 ## Author
 
