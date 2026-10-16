@@ -74,7 +74,7 @@ python3 loadtest/analyze.py loadtest/results/<run>/results.jtl \
   - Anything else is flagged `<- unexpected` and fails the run.
 - **Latency**: min, mean and nearest-rank percentiles (p50 to p99) of JMeter's `elapsed` time, in milliseconds.
 - **Throughput**: all requests per second, plus confirmed purchases (200s) per second, both over the wall-clock span from the first request start to the last request end.
-- **Peak in-flight**: the most requests open at the same instant. It's computed with a sweep line over each request's `[start, start + elapsed]` interval. This shows how concurrent the run really was. A burst run should get close to `THREADS`. If it's far below, the load generator or server queued the requests instead of running them together.
+- **Peak in-flight**: the most requests open at the same instant. It's computed with a sweep line over each request's half-open `[start, start + elapsed)` interval, so a request that ends in the same millisecond another starts is not counted as overlapping. Each start is also clamped to its thread's previous end. JMeter recalculates its clock offset every 5 s, which can move a start up to a millisecond earlier, and the summary reports how many starts were clamped. This shows how concurrent the run really was. A burst run should get close to `THREADS`. If it's far below, the load generator or server queued the requests instead of running them together.
 - **Little's law average**: throughput × mean latency, which is the average number of requests in flight. Compare it with the peak: a low average with a high peak means short bursts of contention.
 - **Invariants**
   - `finalStock >= 0`

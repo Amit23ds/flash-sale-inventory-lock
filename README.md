@@ -140,21 +140,23 @@ Discard a warm-up run, then run each scenario 3 times and report the median.
 
 | Metric | Burst | Sustained |
 |---|---|---|
-| Threads | <!-- FILL: burst threads --> | <!-- FILL: sustained threads --> |
-| Stock per product | <!-- FILL: burst stock --> | <!-- FILL: sustained stock --> |
-| Products | <!-- FILL: burst products --> | <!-- FILL: sustained products --> |
-| Confirmed (200) | <!-- FILL: burst confirmed --> | <!-- FILL: sustained confirmed --> |
-| 409s | <!-- FILL: burst 409s --> | <!-- FILL: sustained 409s --> |
-| 429s | <!-- FILL: burst 429s --> | <!-- FILL: sustained 429s --> |
-| Unexpected codes | <!-- FILL: burst unexpected --> | <!-- FILL: sustained unexpected --> |
-| Final stock | <!-- FILL: burst final stock --> | <!-- FILL: sustained final stock --> |
-| Peak in-flight requests | <!-- FILL: burst peak in-flight --> | <!-- FILL: sustained peak in-flight --> |
-| Throughput (req/s) | <!-- FILL: burst throughput --> | <!-- FILL: sustained throughput --> |
-| p50 latency (ms) | <!-- FILL: burst p50 --> | <!-- FILL: sustained p50 --> |
-| p95 latency (ms) | <!-- FILL: burst p95 --> | <!-- FILL: sustained p95 --> |
-| p99 latency (ms) | <!-- FILL: burst p99 --> | <!-- FILL: sustained p99 --> |
+| Threads | 500 | 50 |
+| Stock per product | 100 | 1,000,000 |
+| Products | 1 | 1 |
+| Confirmed (200) | 100 | 64,409 |
+| 409s | 400 | 0 |
+| 429s | 0 | 0 |
+| Unexpected codes | 0 | 0 |
+| Final stock | 0 | 935,591 |
+| Peak in-flight requests | 500 | 50 |
+| Throughput (req/s) | 429.6 | 1,069.8 |
+| p50 latency (ms) | 749 | 40 |
+| p95 latency (ms) | 1,101 | 60 |
+| p99 latency (ms) | 1,137 | 81 |
 
-Machine: <!-- FILL: machine spec (CPU, memory, Docker resources, JMeter on the same host or not) -->
+Medians of 3 measured runs per scenario, after one discarded warm-up run; every run passed all invariants. Sustained throughput and latency include the 10 s ramp-up inside the 60 s run, so steady-state throughput is somewhat higher than shown.
+
+Machine: Apple M4. The app, MySQL and Redis run in a Colima VM with 2 CPUs and 2 GiB of memory, and JMeter runs on the same Mac.
 
 ## Observability
 
@@ -179,13 +181,14 @@ Metrics are never tagged with `productId` or `userId`, which would create one ti
 GitHub Actions ([`ci.yml`](.github/workflows/ci.yml)) runs on every push to `main` and every pull request against `main`:
 
 1. `mvn -B verify` on JDK 25 runs the unit and web-layer tests (Surefire), then the Testcontainers integration tests (Failsafe).
-2. JaCoCo merges unit and integration coverage into one report and **fails the build** if merged line coverage falls below the gate (<!-- FILL: coverage % -->). Only the `DemoApplication` bootstrap class is excluded. Lombok-generated code is ignored through `lombok.config`.
+2. JaCoCo merges unit and integration coverage into one report and **fails the build** if merged line coverage falls below the 90% gate. Current merged line coverage is 93.5%. Only the `DemoApplication` bootstrap class is excluded. Lombok-generated code is ignored through `lombok.config`.
 3. The JaCoCo, Surefire and Failsafe reports are uploaded as build artifacts, even when the build fails.
 4. A table of test counts and line/branch coverage is written to the run summary.
 
 ## Known limitations
 
 - **One lock per hot product serializes its buyers.** All purchases of one product queue on a single Redis lock, so that product's throughput ceiling is roughly 1 / (lock-held time), however many app instances run. `flashsale.lock.held` measures that time. Spreading stock across lock shards, or reserving it in Redis, would raise the ceiling at the cost of complexity.
+- **One hot product levels off at about 1,000–1,180 purchases/s** in the sustained runs above, which means roughly 1 ms of lock hold per purchase.
 - **Load-test results come from a single laptop.** JMeter, the app, MySQL and Redis all run on the same machine, so they compete for CPU, and nothing crosses a real network. Treat the numbers as relative comparisons between runs, not as capacity figures for production.
 
 ## Tech stack

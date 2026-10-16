@@ -26,20 +26,41 @@ def percentile(sorted_values, p):
 
 
 def peak_in_flight(intervals):
-    """Largest number of requests whose [start, end] intervals overlap at one instant.
+    """Largest number of requests whose [start, end) intervals overlap at one instant.
 
-    Intervals are closed, as JMeter reports whole milliseconds: a request ending at t and
-    another starting at t count as overlapping.
+    Intervals are half-open: a request ending at t and another starting at t do not overlap,
+    so a thread that sends its next request in the same millisecond is not counted twice.
     """
     events = []
     for start, end in intervals:
-        events.append((start, 0))  # 0 sorts before 1, so starts win ties with ends.
-        events.append((end, 1))
+        events.append((end, 0))  # 0 sorts before 1, so ends are processed before starts on ties.
+        events.append((start, 1))
     in_flight = peak = 0
     for _, kind in sorted(events):
-        in_flight += 1 if kind == 0 else -1
+        in_flight += 1 if kind == 1 else -1
         peak = max(peak, in_flight)
     return peak
+
+
+def in_flight_intervals(samples):
+    """[start, end) per sample, with each start clamped to its thread's previous end.
+
+    A JMeter thread sends one request at a time, but JMeter derives timeStamp from a
+    nanoTime-to-wall-clock offset that a background thread recalculates (every 5 s by
+    default). When the offset moves, a thread's next start can appear up to a millisecond
+    before its previous end. Returns the intervals and how many starts were clamped.
+    """
+    intervals = []
+    previous_end = {}
+    clamped = 0
+    for start, elapsed, _, thread in sorted(samples, key=lambda s: (s[3], s[0])):
+        end = start + elapsed
+        floor = previous_end.get(thread)
+        if thread is not None and floor is not None and start < floor:
+            start, end, clamped = floor, max(end, floor), clamped + 1
+        previous_end[thread] = end
+        intervals.append((start, end))
+    return intervals, clamped
 
 
 def read_samples(path):
@@ -49,7 +70,8 @@ def read_samples(path):
         if missing:
             raise ValueError(f"missing JTL columns: {', '.join(sorted(missing))} "
                              "(expected CSV output with field names)")
-        return [(int(row["timeStamp"]), int(row["elapsed"]), row["responseCode"]) for row in reader]
+        return [(int(row["timeStamp"]), int(row["elapsed"]), row["responseCode"], row.get("threadName"))
+                for row in reader]
 
 
 def main():
@@ -73,10 +95,11 @@ def main():
         print(f"analyze.py: {args.jtl} contains no samples", file=sys.stderr)
         return 2
 
-    codes = Counter(code for _, _, code in samples)
+    codes = Counter(code for _, _, code, _ in samples)
     unexpected = sum(n for code, n in codes.items() if code not in EXPECTED_CODES)
-    latencies = sorted(elapsed for _, elapsed, _ in samples)
-    intervals = [(start, start + elapsed) for start, elapsed, _ in samples]
+    latencies = sorted(elapsed for _, elapsed, _, _ in samples)
+    intervals = [(start, start + elapsed) for start, elapsed, _, _ in samples]
+    flight_intervals, clamped = in_flight_intervals(samples)
     first_start = min(start for start, _ in intervals)
     last_end = max(end for _, end in intervals)
     duration_s = max(last_end - first_start, 1) / 1000
@@ -99,7 +122,8 @@ def main():
     print(f"  All requests          {throughput:.1f} req/s")
     print(f"  Confirmed (200)       {codes['200'] / duration_s:.1f} purchases/s")
     print("Concurrency")
-    print(f"  Peak in-flight        {peak_in_flight(intervals)}")
+    clamp_note = f"   ({clamped} start(s) clamped to the thread's previous end)" if clamped else ""
+    print(f"  Peak in-flight        {peak_in_flight(flight_intervals)}{clamp_note}")
     print(f"  Little's law average  {throughput * mean_ms / 1000:.2f}   (throughput x mean latency)")
 
     checks = [("unexpected response codes == 0", unexpected == 0, f"{unexpected}")]
