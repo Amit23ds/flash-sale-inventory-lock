@@ -19,6 +19,10 @@ import com.example.demo.exception.ConcurrentStockUpdateException;
 import com.example.demo.exception.LockAcquisitionException;
 import com.example.demo.exception.OutOfStockException;
 import com.example.demo.exception.ProductNotFoundException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.concurrent.TimeUnit;
@@ -50,6 +54,10 @@ class PurchaseServiceTest {
     // Real values injected by @InjectMocks; zero backoff keeps retry tests fast.
     @Spy
     private PurchaseProperties purchaseProperties = new PurchaseProperties(3, Duration.ZERO, Duration.ZERO);
+
+    // Real in-memory registry, also injected by @InjectMocks, so tests can assert recorded metrics.
+    @Spy
+    private MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @InjectMocks
     private PurchaseServiceImpl purchaseService;
@@ -87,6 +95,12 @@ class PurchaseServiceTest {
         verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
         verify(lock).unlock();
         verifyNoMoreInteractions(redissonClient, purchaseTransactionalService);
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "confirmed"));
+        assertEquals(1, timerCount("flashsale.lock.wait", "result", "acquired"));
+        assertEquals(1, timerCount("flashsale.lock.held"));
+        assertEquals(0, counterValue("flashsale.optimistic.retry"));
+        assertEquals(0, counterValue("flashsale.lock.fallback"));
     }
 
     @Test
@@ -181,6 +195,11 @@ class PurchaseServiceTest {
         assertEquals("Could not reserve stock after 3 concurrent retries", exception.getMessage());
         verify(purchaseTransactionalService, times(3)).decrementStockAndCreateOrder(20L, 10L);
         verify(lock).unlock();
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "version_conflict"));
+        assertEquals(2, counterValue("flashsale.optimistic.retry"),
+                "3 attempts means 2 retries; the final failure is not retried");
+        assertEquals(1, timerCount("flashsale.lock.held"));
     }
 
     @Test
@@ -201,6 +220,10 @@ class PurchaseServiceTest {
         verify(redissonClient).getLock("product-lock:20");
         verify(lock).tryLock(2, TimeUnit.SECONDS);
         verifyNoMoreInteractions(redissonClient, lock, purchaseTransactionalService);
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "lock_timeout"));
+        assertEquals(1, timerCount("flashsale.lock.wait", "result", "timeout"));
+        assertEquals(0, timerCount("flashsale.lock.held"));
     }
 
     @Test
@@ -228,6 +251,11 @@ class PurchaseServiceTest {
         verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
         verify(lock, never()).isHeldByCurrentThread();
         verify(lock, never()).unlock();
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "confirmed"));
+        assertEquals(1, counterValue("flashsale.lock.fallback"));
+        assertEquals(1, timerCount("flashsale.lock.wait", "result", "redis_error"));
+        assertEquals(0, timerCount("flashsale.lock.held"));
     }
 
     @Test
@@ -274,5 +302,15 @@ class PurchaseServiceTest {
         assertEquals(55L, response.getOrderId());
         verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
         verify(lock).unlock();
+    }
+
+    private double counterValue(String name, String... tags) {
+        Counter counter = meterRegistry.find(name).tags(tags).counter();
+        return counter == null ? 0 : counter.count();
+    }
+
+    private long timerCount(String name, String... tags) {
+        Timer timer = meterRegistry.find(name).tags(tags).timer();
+        return timer == null ? 0 : timer.count();
     }
 }

@@ -28,6 +28,20 @@ spring:
 server:
   port: 8080
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  metrics:
+    tags:
+      application: flash-sale
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        flashsale.lock.wait: true
+        flashsale.lock.held: true
+
 app:
   redis:
     redisson:
