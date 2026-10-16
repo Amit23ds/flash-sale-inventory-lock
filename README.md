@@ -88,6 +88,8 @@ docker compose up --build
 
 This starts the Spring Boot app alongside MySQL and Redis as a single reproducible environment. Database credentials are read from `.env`, which is gitignored so secrets never reach the repo.
 
+Set `SPRING_PROFILES_ACTIVE=dev` to turn on SQL and bind-parameter logging (off by default).
+
 ## Running tests
 
 ```bash
