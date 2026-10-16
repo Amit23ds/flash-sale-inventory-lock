@@ -27,3 +27,5 @@ out/
 
 # Secrets
 .env
+# Load test output (loadtest/run.sh)
+loadtest/results/

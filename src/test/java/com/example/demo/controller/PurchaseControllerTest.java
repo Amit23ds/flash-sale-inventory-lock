@@ -9,7 +9,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.demo.dto.PurchaseRequest;
 import com.example.demo.dto.PurchaseResponse;
 import com.example.demo.entity.OrderStatus;
+import com.example.demo.exception.ConcurrentStockUpdateException;
+import com.example.demo.exception.LockAcquisitionException;
 import com.example.demo.exception.OutOfStockException;
+import com.example.demo.exception.ProductNotFoundException;
 import com.example.demo.service.ProductService;
 import com.example.demo.service.PurchaseService;
 import java.time.LocalDateTime;
@@ -26,7 +29,8 @@ import org.redisson.api.RedissonClient;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-class PurchaseControllerIntegrationTest {
+
+class PurchaseControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
@@ -85,5 +89,47 @@ class PurchaseControllerIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.userId").value("User ID must not be null"))
                 .andExpect(jsonPath("$.productId").value("Product ID must not be null"));
+    }
+
+    @Test
+    void purchase_returns429WhenLockCannotBeAcquired() throws Exception {
+        when(purchaseService.purchase(org.mockito.ArgumentMatchers.any(PurchaseRequest.class)))
+                .thenThrow(new LockAcquisitionException("Too many requests"));
+
+        mockMvc.perform(post("/api/v1/purchase")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":5,"productId":7}
+                                """))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(content().string("Too many requests"));
+    }
+
+    @Test
+    void purchase_returns409WhenConcurrentRetriesExhausted() throws Exception {
+        when(purchaseService.purchase(org.mockito.ArgumentMatchers.any(PurchaseRequest.class)))
+                .thenThrow(new ConcurrentStockUpdateException("Could not reserve stock after 3 concurrent retries"));
+
+        mockMvc.perform(post("/api/v1/purchase")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":5,"productId":7}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(content().string("Could not reserve stock after 3 concurrent retries"));
+    }
+
+    @Test
+    void purchase_returns404WhenProductMissing() throws Exception {
+        when(purchaseService.purchase(org.mockito.ArgumentMatchers.any(PurchaseRequest.class)))
+                .thenThrow(new ProductNotFoundException("Product not found"));
+
+        mockMvc.perform(post("/api/v1/purchase")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":5,"productId":7}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string("Product not found"));
     }
 }

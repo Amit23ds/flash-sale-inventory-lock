@@ -2,11 +2,14 @@ package com.example.demo.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.demo.config.PurchaseProperties;
 import com.example.demo.dto.PurchaseRequest;
 import com.example.demo.dto.PurchaseResponse;
 import com.example.demo.entity.Order;
@@ -16,18 +19,27 @@ import com.example.demo.exception.ConcurrentStockUpdateException;
 import com.example.demo.exception.LockAcquisitionException;
 import com.example.demo.exception.OutOfStockException;
 import com.example.demo.exception.ProductNotFoundException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.RedisConnectionException;
+import org.redisson.client.RedisException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 @ExtendWith(MockitoExtension.class)
+
 class PurchaseServiceTest {
 
     @Mock
@@ -38,6 +50,14 @@ class PurchaseServiceTest {
 
     @Mock
     private RLock lock;
+
+    // Real values injected by @InjectMocks; zero backoff keeps retry tests fast.
+    @Spy
+    private PurchaseProperties purchaseProperties = new PurchaseProperties(3, Duration.ZERO, Duration.ZERO);
+
+    // Real in-memory registry, also injected by @InjectMocks, so tests can assert recorded metrics.
+    @Spy
+    private MeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @InjectMocks
     private PurchaseServiceImpl purchaseService;
@@ -75,6 +95,12 @@ class PurchaseServiceTest {
         verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
         verify(lock).unlock();
         verifyNoMoreInteractions(redissonClient, purchaseTransactionalService);
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "confirmed"));
+        assertEquals(1, timerCount("flashsale.lock.wait", "result", "acquired"));
+        assertEquals(1, timerCount("flashsale.lock.held"));
+        assertEquals(0, counterValue("flashsale.optimistic.retry"));
+        assertEquals(0, counterValue("flashsale.lock.fallback"));
     }
 
     @Test
@@ -169,6 +195,11 @@ class PurchaseServiceTest {
         assertEquals("Could not reserve stock after 3 concurrent retries", exception.getMessage());
         verify(purchaseTransactionalService, times(3)).decrementStockAndCreateOrder(20L, 10L);
         verify(lock).unlock();
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "version_conflict"));
+        assertEquals(2, counterValue("flashsale.optimistic.retry"),
+                "3 attempts means 2 retries; the final failure is not retried");
+        assertEquals(1, timerCount("flashsale.lock.held"));
     }
 
     @Test
@@ -189,5 +220,97 @@ class PurchaseServiceTest {
         verify(redissonClient).getLock("product-lock:20");
         verify(lock).tryLock(2, TimeUnit.SECONDS);
         verifyNoMoreInteractions(redissonClient, lock, purchaseTransactionalService);
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "lock_timeout"));
+        assertEquals(1, timerCount("flashsale.lock.wait", "result", "timeout"));
+        assertEquals(0, timerCount("flashsale.lock.held"));
+    }
+
+    @Test
+    void purchase_fallsBackToOptimisticLockingWhenRedisIsDown() throws Exception {
+        PurchaseRequest request = PurchaseRequest.builder()
+                .userId(10L)
+                .productId(20L)
+                .build();
+        Order savedOrder = Order.builder()
+                .id(55L)
+                .userId(10L)
+                .productId(20L)
+                .orderStatus(OrderStatus.CONFIRMED)
+                .creationTimestamp(LocalDateTime.of(2026, 6, 27, 12, 0))
+                .build();
+
+        when(redissonClient.getLock("product-lock:20")).thenReturn(lock);
+        when(lock.tryLock(2, TimeUnit.SECONDS)).thenThrow(new RedisConnectionException("Redis is down"));
+        when(purchaseTransactionalService.decrementStockAndCreateOrder(20L, 10L))
+                .thenReturn(savedOrder);
+
+        PurchaseResponse response = purchaseService.purchase(request);
+
+        assertEquals(55L, response.getOrderId());
+        verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
+        verify(lock, never()).isHeldByCurrentThread();
+        verify(lock, never()).unlock();
+
+        assertEquals(1, counterValue("flashsale.purchase", "outcome", "confirmed"));
+        assertEquals(1, counterValue("flashsale.lock.fallback"));
+        assertEquals(1, timerCount("flashsale.lock.wait", "result", "redis_error"));
+        assertEquals(0, timerCount("flashsale.lock.held"));
+    }
+
+    @Test
+    void purchase_throwsConcurrentStockUpdateExceptionWhenRedisIsDownAndRetriesExhausted() throws Exception {
+        PurchaseRequest request = PurchaseRequest.builder()
+                .userId(10L)
+                .productId(20L)
+                .build();
+
+        when(redissonClient.getLock("product-lock:20")).thenReturn(lock);
+        when(lock.tryLock(2, TimeUnit.SECONDS)).thenThrow(new RedisConnectionException("Redis is down"));
+        when(purchaseTransactionalService.decrementStockAndCreateOrder(20L, 10L))
+                .thenThrow(new ObjectOptimisticLockingFailureException(Product.class, 20L));
+
+        assertThrows(ConcurrentStockUpdateException.class, () -> purchaseService.purchase(request));
+
+        verify(purchaseTransactionalService, times(3)).decrementStockAndCreateOrder(20L, 10L);
+        verify(lock, never()).unlock();
+    }
+
+    @Test
+    void purchase_returnsResponseWhenUnlockFailsAfterCommit() throws Exception {
+        PurchaseRequest request = PurchaseRequest.builder()
+                .userId(10L)
+                .productId(20L)
+                .build();
+        Order savedOrder = Order.builder()
+                .id(55L)
+                .userId(10L)
+                .productId(20L)
+                .orderStatus(OrderStatus.CONFIRMED)
+                .creationTimestamp(LocalDateTime.of(2026, 6, 27, 12, 0))
+                .build();
+
+        when(redissonClient.getLock("product-lock:20")).thenReturn(lock);
+        when(lock.tryLock(2, TimeUnit.SECONDS)).thenReturn(true);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        when(purchaseTransactionalService.decrementStockAndCreateOrder(20L, 10L))
+                .thenReturn(savedOrder);
+        doThrow(new RedisException("Redis went away")).when(lock).unlock();
+
+        PurchaseResponse response = purchaseService.purchase(request);
+
+        assertEquals(55L, response.getOrderId());
+        verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
+        verify(lock).unlock();
+    }
+
+    private double counterValue(String name, String... tags) {
+        Counter counter = meterRegistry.find(name).tags(tags).counter();
+        return counter == null ? 0 : counter.count();
+    }
+
+    private long timerCount(String name, String... tags) {
+        Timer timer = meterRegistry.find(name).tags(tags).timer();
+        return timer == null ? 0 : timer.count();
     }
 }

@@ -22,7 +22,9 @@ public class RedissonConfig {
                 .setAddress(redisAddress)
                 .setConnectionPoolSize(redissonProperties.connectionPoolSize())
                 .setConnectionMinimumIdleSize(redissonProperties.connectionMinimumIdleSize())
-                .setTimeout((int) redissonProperties.timeout().toMillis());
+                .setTimeout((int) redissonProperties.timeout().toMillis())
+                .setRetryAttempts(redissonProperties.retryAttempts())
+                .setRetryInterval((int) redissonProperties.retryInterval().toMillis());
 
         if (redisProperties.getPassword() != null && !redisProperties.getPassword().isBlank()) {
             singleServerConfig.setPassword(redisProperties.getPassword());

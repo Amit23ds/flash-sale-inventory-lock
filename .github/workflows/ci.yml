@@ -24,3 +24,51 @@ jobs:
 
       - name: Run unit tests and Testcontainers integration test
         run: mvn -B verify
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: test-and-coverage-reports
+          path: |
+            target/site/jacoco
+            target/surefire-reports
+            target/failsafe-reports
+          if-no-files-found: warn
+
+      - name: Write test and coverage summary
+        if: always()
+        run: |
+          # "run, failed, skipped" summed over the <testsuite> elements of the JUnit XML reports.
+          test_counts() {
+            cat "$1"/TEST-*.xml 2>/dev/null | awk '
+              function attr(tag, name) {
+                if (match(tag, " " name "=\"[0-9]+\"")) return substr(tag, RSTART + length(name) + 3, RLENGTH - length(name) - 4)
+                return 0
+              }
+              match($0, /<testsuite [^>]*>/) {
+                tag = substr($0, RSTART, RLENGTH)
+                run += attr(tag, "tests"); failed += attr(tag, "failures") + attr(tag, "errors"); skipped += attr(tag, "skipped")
+              }
+              END { if (run == 0) print "n/a"; else printf "%d run, %d failed, %d skipped\n", run, failed, skipped }'
+          }
+
+          csv=target/site/jacoco/jacoco.csv
+          if [ -f "$csv" ]; then
+            # Columns: 6/7 = BRANCH_MISSED/COVERED, 8/9 = LINE_MISSED/COVERED.
+            read -r line_pct branch_pct < <(awk -F, 'NR > 1 { bm += $6; bc += $7; lm += $8; lc += $9 }
+              END { printf "%.1f%% %.1f%%\n", (lm + lc ? 100 * lc / (lm + lc) : 0), (bm + bc ? 100 * bc / (bm + bc) : 0) }' "$csv")
+          else
+            line_pct="n/a"; branch_pct="n/a"
+          fi
+
+          {
+            echo "### Tests and coverage"
+            echo
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Unit tests | $(test_counts target/surefire-reports) |"
+            echo "| Integration tests | $(test_counts target/failsafe-reports) |"
+            echo "| Line coverage | $line_pct |"
+            echo "| Branch coverage | $branch_pct |"
+          } >> "$GITHUB_STEP_SUMMARY"

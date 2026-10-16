@@ -6,13 +6,7 @@ import com.example.demo.dto.PurchaseRequest;
 import com.example.demo.entity.Product;
 import com.example.demo.repository.OrderRepository;
 import com.example.demo.repository.ProductRepository;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +26,7 @@ import org.testcontainers.utility.DockerImageName;
 
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
 @Testcontainers
+
 class FlashSaleConcurrencyIT {
 
     @Container
@@ -46,12 +41,7 @@ class FlashSaleConcurrencyIT {
 
     @DynamicPropertySource
     static void registerContainerProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", MYSQL::getJdbcUrl);
-        registry.add("spring.datasource.username", MYSQL::getUsername);
-        registry.add("spring.datasource.password", MYSQL::getPassword);
-        registry.add("spring.datasource.driver-class-name", MYSQL::getDriverClassName);
-        registry.add("spring.jpa.database-platform", () -> "org.hibernate.dialect.MySQLDialect");
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
+        IntegrationTestSupport.registerMySql(registry, MYSQL);
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
     }
@@ -84,40 +74,23 @@ class FlashSaleConcurrencyIT {
                 .availableStock(initialStock)
                 .build());
 
-        ExecutorService executor = Executors.newFixedThreadPool(concurrentRequests);
-        CountDownLatch startGate = new CountDownLatch(1);
         AtomicInteger confirmed = new AtomicInteger();
         AtomicInteger outOfStock = new AtomicInteger();
         AtomicInteger throttled = new AtomicInteger();
         AtomicInteger unexpected = new AtomicInteger();
 
-        List<Future<?>> submissions = new ArrayList<>();
-        for (int i = 0; i < concurrentRequests; i++) {
-            final long userId = i + 1L;
-            submissions.add(executor.submit(() -> {
-                try {
-                    startGate.await();
-                    ResponseEntity<String> response = restTemplate.postForEntity(
-                            "http://localhost:" + port + "/api/v1/purchase",
-                            new PurchaseRequest(userId, product.getId()),
-                            String.class);
-                    switch (response.getStatusCode().value()) {
-                        case 200 -> confirmed.incrementAndGet();
-                        case 409 -> outOfStock.incrementAndGet();
-                        case 429 -> throttled.incrementAndGet();
-                        default -> unexpected.incrementAndGet();
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }));
-        }
-
-        startGate.countDown();
-        for (Future<?> submission : submissions) {
-            submission.get(30, TimeUnit.SECONDS);
-        }
-        executor.shutdown();
+        IntegrationTestSupport.runConcurrently(concurrentRequests, Duration.ofSeconds(30), index -> {
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                    "http://localhost:" + port + "/api/v1/purchase",
+                    new PurchaseRequest(index + 1L, product.getId()),
+                    String.class);
+            switch (response.getStatusCode().value()) {
+                case 200 -> confirmed.incrementAndGet();
+                case 409 -> outOfStock.incrementAndGet();
+                case 429 -> throttled.incrementAndGet();
+                default -> unexpected.incrementAndGet();
+            }
+        });
 
         Product refreshed = productRepository.findById(product.getId()).orElseThrow();
 

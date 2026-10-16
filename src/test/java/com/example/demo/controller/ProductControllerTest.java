@@ -25,7 +25,7 @@ import static org.mockito.Mockito.when;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-class ProductControllerIntegrationTest {
+class ProductControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
