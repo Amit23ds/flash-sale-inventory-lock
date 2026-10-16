@@ -2,11 +2,14 @@ package com.example.demo.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.demo.config.PurchaseProperties;
 import com.example.demo.dto.PurchaseRequest;
 import com.example.demo.dto.PurchaseResponse;
 import com.example.demo.entity.Order;
@@ -16,18 +19,23 @@ import com.example.demo.exception.ConcurrentStockUpdateException;
 import com.example.demo.exception.LockAcquisitionException;
 import com.example.demo.exception.OutOfStockException;
 import com.example.demo.exception.ProductNotFoundException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.RedisConnectionException;
+import org.redisson.client.RedisException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 @ExtendWith(MockitoExtension.class)
+
 class PurchaseServiceTest {
 
     @Mock
@@ -38,6 +46,10 @@ class PurchaseServiceTest {
 
     @Mock
     private RLock lock;
+
+    // Real values injected by @InjectMocks; zero backoff keeps retry tests fast.
+    @Spy
+    private PurchaseProperties purchaseProperties = new PurchaseProperties(3, Duration.ZERO, Duration.ZERO);
 
     @InjectMocks
     private PurchaseServiceImpl purchaseService;
@@ -189,5 +201,78 @@ class PurchaseServiceTest {
         verify(redissonClient).getLock("product-lock:20");
         verify(lock).tryLock(2, TimeUnit.SECONDS);
         verifyNoMoreInteractions(redissonClient, lock, purchaseTransactionalService);
+    }
+
+    @Test
+    void purchase_fallsBackToOptimisticLockingWhenRedisIsDown() throws Exception {
+        PurchaseRequest request = PurchaseRequest.builder()
+                .userId(10L)
+                .productId(20L)
+                .build();
+        Order savedOrder = Order.builder()
+                .id(55L)
+                .userId(10L)
+                .productId(20L)
+                .orderStatus(OrderStatus.CONFIRMED)
+                .creationTimestamp(LocalDateTime.of(2026, 6, 27, 12, 0))
+                .build();
+
+        when(redissonClient.getLock("product-lock:20")).thenReturn(lock);
+        when(lock.tryLock(2, TimeUnit.SECONDS)).thenThrow(new RedisConnectionException("Redis is down"));
+        when(purchaseTransactionalService.decrementStockAndCreateOrder(20L, 10L))
+                .thenReturn(savedOrder);
+
+        PurchaseResponse response = purchaseService.purchase(request);
+
+        assertEquals(55L, response.getOrderId());
+        verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
+        verify(lock, never()).isHeldByCurrentThread();
+        verify(lock, never()).unlock();
+    }
+
+    @Test
+    void purchase_throwsConcurrentStockUpdateExceptionWhenRedisIsDownAndRetriesExhausted() throws Exception {
+        PurchaseRequest request = PurchaseRequest.builder()
+                .userId(10L)
+                .productId(20L)
+                .build();
+
+        when(redissonClient.getLock("product-lock:20")).thenReturn(lock);
+        when(lock.tryLock(2, TimeUnit.SECONDS)).thenThrow(new RedisConnectionException("Redis is down"));
+        when(purchaseTransactionalService.decrementStockAndCreateOrder(20L, 10L))
+                .thenThrow(new ObjectOptimisticLockingFailureException(Product.class, 20L));
+
+        assertThrows(ConcurrentStockUpdateException.class, () -> purchaseService.purchase(request));
+
+        verify(purchaseTransactionalService, times(3)).decrementStockAndCreateOrder(20L, 10L);
+        verify(lock, never()).unlock();
+    }
+
+    @Test
+    void purchase_returnsResponseWhenUnlockFailsAfterCommit() throws Exception {
+        PurchaseRequest request = PurchaseRequest.builder()
+                .userId(10L)
+                .productId(20L)
+                .build();
+        Order savedOrder = Order.builder()
+                .id(55L)
+                .userId(10L)
+                .productId(20L)
+                .orderStatus(OrderStatus.CONFIRMED)
+                .creationTimestamp(LocalDateTime.of(2026, 6, 27, 12, 0))
+                .build();
+
+        when(redissonClient.getLock("product-lock:20")).thenReturn(lock);
+        when(lock.tryLock(2, TimeUnit.SECONDS)).thenReturn(true);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        when(purchaseTransactionalService.decrementStockAndCreateOrder(20L, 10L))
+                .thenReturn(savedOrder);
+        doThrow(new RedisException("Redis went away")).when(lock).unlock();
+
+        PurchaseResponse response = purchaseService.purchase(request);
+
+        assertEquals(55L, response.getOrderId());
+        verify(purchaseTransactionalService).decrementStockAndCreateOrder(20L, 10L);
+        verify(lock).unlock();
     }
 }
