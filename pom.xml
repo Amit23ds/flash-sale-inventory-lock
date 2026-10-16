@@ -20,6 +20,9 @@
         <java.version>25</java.version>
         <maven.compiler.release>25</maven.compiler.release>
         <docker-java.version>3.5.1</docker-java.version>
+        <!-- Boot 3.5.0 manages 1.21.0, which hard-codes Docker API 1.32; Docker Engine 29 requires >= 1.40.
+             1.21.4 negotiates API 1.44 with a 1.32 fallback. -->
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencyManagement>
